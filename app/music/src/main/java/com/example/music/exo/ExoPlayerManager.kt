@@ -5,19 +5,25 @@ import android.media.AudioAttributes
 import android.media.AudioAttributes.CONTENT_TYPE_MUSIC
 import android.media.AudioAttributes.USAGE_MEDIA
 import android.media.AudioManager
+import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import androidx.annotation.RequiresApi
 import com.example.music.model.Song
 import com.example.music.service.SongPlayerService
-import com.google.android.exoplayer2.BuildConfig
-import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.SimpleExoPlayer
+import com.google.android.exoplayer2.*
+import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
+import com.google.android.exoplayer2.extractor.ExtractorsFactory
+import com.google.android.exoplayer2.source.ExtractorMediaSource
+import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.upstream.DataSource
 import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
 import com.google.android.exoplayer2.util.Util
+import java.lang.Error
 
 class ExoPlayerManager(val context: Context): OnExoPlayerManagerCallback {
 
@@ -35,14 +41,14 @@ class ExoPlayerManager(val context: Context): OnExoPlayerManagerCallback {
 
 
     private val mAudioNoisyReceiver = object : BroadcastReceiver(){
-        override fun onReceive(context: Context?, intent: Intent?) {
+        override fun onReceive(context: Context, intent: Intent) {
             if(AudioManager.ACTION_AUDIO_BECOMING_NOISY == intent?.action){
                 if(mPlayOnFocusGain || mExoPlayer != null && mExoPlayer?.playWhenReady == true){
                     val i = Intent(context, SongPlayerService::class.java).apply {
                         action = SongPlayerService.ACTION_CMD
                         putExtra(SongPlayerService.CMD_NAME, SongPlayerService.CMD_PAUSE)
                     }
-                    context?.applicationContext.startService(i)
+                    context.applicationContext.startService(i)
                 }
             }
         }
@@ -92,7 +98,10 @@ class ExoPlayerManager(val context: Context): OnExoPlayerManagerCallback {
     }
 
     override fun stop() {
-        TODO("Not yet implemented")
+        giveUpAudioFocus()
+        releaseResources(true)
+        unregisterAudioReceiver()
+        setCurrentSongState()
     }
 
 
@@ -112,16 +121,29 @@ class ExoPlayerManager(val context: Context): OnExoPlayerManagerCallback {
                 mExoPlayer?.addListener(mEventListener)
             }
 
-            val audioAttributes = AudioAttributes.Builder()
-                    .setContentType(CONTENT_TYPE_MUSIC)
-                    .setUsage(USAGE_MEDIA)
-                    .build()
+            val audioAttributes = com.google.android.exoplayer2.audio.AudioAttributes.Builder()
+                .setContentType(C.CONTENT_TYPE_MUSIC)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
             mExoPlayer?.setAudioAttributes(audioAttributes, false)
-
             val dataSourceFactory = buildDataSourceFactory(context)
+            val extractorsFactory = DefaultExtractorsFactory()
+            val extractorsMediaFactory = ExtractorMediaSource.Factory(dataSourceFactory)
+            extractorsMediaFactory.setExtractorsFactory(extractorsFactory)
 
+            val mediaSource = when (mCurrentSong?.songType){
+                C.TYPE_OTHER ->
+                    ExtractorMediaSource.Factory(dataSourceFactory)
+                        .createMediaSource(Uri.parse(source))
+                else ->
+                    HlsMediaSource.Factory(dataSourceFactory).createMediaSource(Uri.parse(source))
+            }
 
+            mExoPlayer?.prepare(mediaSource)
+
+            mWifiLock?.acquire()
         }
+        configurePlayerState()
     }
 
     private fun buildDataSourceFactory(context: Context): DataSource.Factory{
@@ -166,11 +188,20 @@ class ExoPlayerManager(val context: Context): OnExoPlayerManagerCallback {
     }
 
     override fun pause() {
-        TODO("Not yet implemented")
+        mExoPlayer?.playWhenReady = false
+        releaseResources(false)
+        unregisterAudioReceiver()
     }
 
+    private fun unregisterAudioReceiver(){
+        if(mAudioNoisyReceiverRegistered){
+            context.applicationContext.unregisterReceiver(mAudioNoisyReceiver)
+            mAudioNoisyReceiverRegistered = false
+        }
+    }
     override fun seekTo(position: Long) {
-        TODO("Not yet implemented")
+        registerAudioNoisyReceiver()
+        mExoPlayer?.seekTo(position)
     }
 
     override fun setCallback(callback: OnExoPlayerManagerCallback.OnSongStateCallback) {
@@ -230,13 +261,42 @@ class ExoPlayerManager(val context: Context): OnExoPlayerManagerCallback {
 
         }
 
+        override fun onPlayerError(error: ExoPlaybackException) {
+            val what: String = when (error.type){
+                ExoPlaybackException.TYPE_SOURCE -> error.sourceException.message ?: ""
+                ExoPlaybackException.TYPE_RENDERER -> error.rendererException.message ?: ""
+                ExoPlaybackException.TYPE_UNEXPECTED -> error.unexpectedException.message ?: ""
+                else -> "onPlayerError: $error"
+            }
+        }
+
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             when (playbackState){
                 Player.STATE_IDLE, Player.STATE_BUFFERING, Player.STATE_READY ->{
                     setCurrentSongState()
-                    mUp
+                    mUpdateProgressHandler.sendEmptyMessage(0)
+                }
+                Player.STATE_ENDED -> {
+                    mUpdateProgressHandler.removeMessages(0)
+                    mExoSongStateCallback?.onCompletion()
                 }
             }
+        }
+
+        override fun onPositionDiscontinuity(reason: Int) {
+
+        }
+
+        override fun onSeekProcessed() {
+
+        }
+
+        override fun onRepeatModeChanged(repeatMode: Int) {
+
+        }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+
         }
     }
     companion object{
