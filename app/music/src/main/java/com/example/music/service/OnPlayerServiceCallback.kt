@@ -3,7 +3,7 @@ package com.example.music.service
 import com.example.music.model.Song
 
 interface OnPlayerServiceCallback {
-    fun updateSong(song: Song)
+    fun updateSongData(song: Song)
 
     fun updateSongProgress(duration: Long, position: Long)
 

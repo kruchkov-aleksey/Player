@@ -2,15 +2,19 @@ package com.example.music.service
 
 import android.app.Service
 import android.content.Intent
+import android.media.session.PlaybackState
 import android.os.Binder
 import android.os.IBinder
+import android.util.Log
+import androidx.core.content.ContextCompat
 import com.example.music.exo.ExoPlayerManager
 import com.example.music.media.MediaAdapter
 import com.example.music.media.OnMediaAdapterCallback
 import com.example.music.model.Song
 import com.example.music.notification.MediaNotificationManager
+import java.util.ArrayList
 
-class SongPlayerService: Service(), OnMediaAdapterCallback {
+class SongPlayerService : Service(), OnMediaAdapterCallback {
 
     private var mMediaAdapter: MediaAdapter? = null
     private var mNotificationManager: MediaNotificationManager? = null
@@ -18,33 +22,168 @@ class SongPlayerService: Service(), OnMediaAdapterCallback {
     private var playState = 0
     var mCallback: OnPlayerServiceCallback? = null
     var command: String? = null
+
+
     override fun onCreate() {
         super.onCreate()
         val exoPlayerManager = ExoPlayerManager(this)
         mMediaAdapter = MediaAdapter(exoPlayerManager, this)
         mNotificationManager = MediaNotificationManager(this)
-        mNotificationManager?.createMediaNotifiocation()
+        mNotificationManager?.createMediaNotification()
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        TODO("Not yet implemented")
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand() called with: intent = $intent, flags = $flags, startId = $startId")
+        return START_NOT_STICKY
     }
 
+    fun subscribeToSongPlayerUpdates(){
+        Log.d(TAG, "subscribeToSongPlayerUpdates() called")
 
-    fun getCurrentSong(): Song?{
+        ContextCompat.startForegroundService(applicationContext, Intent(this, SongPlayerService::class.java))
+    }
+
+    fun addListener(callback: OnPlayerServiceCallback) {
+        mCallback = callback
+    }
+
+    fun removeListener(){
+        mCallback = null
+    }
+
+    fun getCurrentSong(): Song? {
         return mMediaAdapter?.getCurrentSong()
     }
 
-    inner class LocalBinder: Binder(){
+    fun getCurrentSongList(): ArrayList<Song>? {
+        return mMediaAdapter?.getCurrentSongList()
+    }
+
+    fun getPlayState(): Int = playState
+
+    override fun onSongChanged(song : Song) {
+        mCallback?.updateSongData(song)
+    }
+
+    override fun onShuffle(isShuffle: Boolean) {
+        mMediaAdapter?.shuffle(isShuffle)
+    }
+
+    override fun onRepeatAll(repeatAll: Boolean) {
+        mMediaAdapter?.repeatAll(repeatAll)
+    }
+
+    override fun onRepeat(isRepeat: Boolean) {
+        mMediaAdapter?.repeat(isRepeat)
+    }
+
+    fun playCurrentSong(){
+        getCurrentSong()?.let { play(it) }
+    }
+
+    fun play(song: Song?) {
+        song?.let { mMediaAdapter?.play(it) }
+    }
+
+    fun play(songList: MutableList<Song>?, song: Song?) {
+        song?.let { nonNullSong->
+            songList?.let { mMediaAdapter?.play(it, nonNullSong) } ?: play(nonNullSong)
+        }
+    }
+
+    fun pause() {
+        mMediaAdapter?.pause()
+    }
+
+    fun stop() {
+        mMediaAdapter?.stop()
+        stopForeground(true)
+        mNotificationManager = null
+        stopSelf()
+        mCallback?.stopService()
+    }
+
+    override fun addNewPlaylistToCurrent(songList: ArrayList<Song>) {
+        mMediaAdapter?.addToCurrentPlaylist(songList)
+    }
+
+    override fun setDuration(duration: Long, position: Long) {
+        mCallback?.updateSongProgress(duration, position)
+    }
+
+    fun skipToNext() {
+        mMediaAdapter?.skipToNext()
+    }
+
+    fun skipToPrevious() {
+        mMediaAdapter?.skipToPrevious()
+    }
+
+    fun seekTo(position: Long) {
+        mMediaAdapter?.seekTo(position)
+    }
+
+
+    override fun onPlaybackStateChanged(state : Int) {
+        playState = state
+        when (state) {
+            PlaybackState.STATE_BUFFERING -> {
+                mCallback?.setBufferingData(true)
+                mCallback?.setVisibilityData(true)
+                mCallback?.setPlayStatus(true)
+            }
+
+            PlaybackState.STATE_PLAYING -> {
+                mCallback?.setBufferingData(false)
+                mCallback?.setVisibilityData(true)
+                mCallback?.setPlayStatus(true)
+            }
+
+            PlaybackState.STATE_PAUSED -> {
+                mCallback?.setBufferingData(false)
+                mCallback?.setVisibilityData(true)
+                mCallback?.setPlayStatus(false)
+            }
+
+            else -> {
+                mCallback?.setBufferingData(false)
+                mCallback?.setVisibilityData(false)
+                mCallback?.setPlayStatus(false)
+            }
+        }
+        mNotificationManager?.generateNotification()
+    }
+
+    private fun unsubscribeToSongPlayerUpdates(){
+        Log.d(TAG, "unsubscribeToSongPlayerUpdates() called")
+        removeListener()
+    }
+
+    override fun onDestroy() {
+        unsubscribeToSongPlayerUpdates()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent): IBinder{
+        val action = intent.action
+        command = intent.getStringExtra(CMD_NAME)
+        if (ACTION_CMD == action && CMD_PAUSE == command) {
+            mMediaAdapter?.pause()
+        }
+        return binder
+    }
+
+    inner class LocalBinder : Binder() {
         val service: SongPlayerService
             get() = this@SongPlayerService
     }
-    companion object{
+
+
+    companion object {
 
         private val TAG = SongPlayerService::class.java.name
         const val ACTION_CMD = "app.ACTION_CMD"
         const val CMD_NAME = "CMD_NAME"
         const val CMD_PAUSE = "CMD_PAUSE"
     }
-
 }

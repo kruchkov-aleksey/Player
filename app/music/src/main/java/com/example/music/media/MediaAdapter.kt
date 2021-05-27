@@ -41,7 +41,7 @@ class MediaAdapter(
         playlistManager?.skipPosition(1)
     }
 
-    fun skipPrevious(){
+    fun skipToPrevious(){
         playlistManager?.skipPosition(-1)
     }
 
